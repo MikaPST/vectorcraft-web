@@ -1,0 +1,7 @@
+services:
+  vectorcraft-web:
+    image: ghcr.io/mikapst/vectorcraft-web:latest
+    container_name: vectorcraft-web
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
