@@ -1,73 +1,229 @@
-# VectorCraft Web
+<p align="center">
+  <img src="https://raw.githubusercontent.com/storytold/vectorcraft/main/assets/app-icon/hicolor/256x256/apps/ai.storyteller.vectorcraft.png" width="128" height="128" alt="VectorCraft application icon">
+</p>
 
-[![Build and publish](https://github.com/MikaPST/vectorcraft-web/actions/workflows/publish-image.yml/badge.svg)](https://github.com/MikaPST/vectorcraft-web/actions/workflows/publish-image.yml)
-[![GHCR](https://img.shields.io/badge/GHCR-vectorcraft--web-2496ED?logo=docker&logoColor=white)](https://github.com/MikaPST/vectorcraft-web/pkgs/container/vectorcraft-web)
+<h1 align="center">VectorCraft Web — Docker Image</h1>
 
-A community-maintained Docker image for the browser-based version of [VectorCraft](https://github.com/storytold/vectorcraft), an open-source vector illustration application written in Rust.
+<p align="center">
+  A community-maintained Docker image for
+  <a href="https://github.com/storytold/vectorcraft">VectorCraft</a>,
+  bringing its Rust and WebAssembly-based vector illustration editor to a self-hosted web interface.
+  <br>
+  Automated builds and image publication to GitHub Container Registry (GHCR).
+</p>
 
-This repository builds the official VectorCraft Web application from source, includes the upstream `craft-fonts` resources, and publishes a multi-platform Docker image to GitHub Container Registry.
+<p align="center">
+  <a href="https://github.com/MikaPST/vectorcraft-web/actions/workflows/publish-image.yml">
+    <img src="https://github.com/MikaPST/vectorcraft-web/actions/workflows/publish-image.yml/badge.svg" alt="Build and publish VectorCraft Web">
+  </a>
+  <a href="https://github.com/MikaPST/vectorcraft-web/pkgs/container/vectorcraft-web">
+    <img src="https://ghcr-badge.egpl.dev/mikapst/vectorcraft-web/latest_tag?trim=major&label=GHCR" alt="GHCR image tag">
+  </a>
+  <a href="docker-compose.yml">
+    <img src="https://img.shields.io/badge/Docker%20Compose-ready-2496ED?logo=docker&logoColor=white" alt="Docker Compose configuration">
+  </a>
+</p>
+
+---
+
+## Why this repository?
+
+The official VectorCraft project provides a WebAssembly-based version of its vector illustration editor that can be hosted as a static website. This repository automates building that web application from the upstream source code and packages the generated files into a Docker image served by NGINX.
+
+The goals are to:
+
+- Build VectorCraft Web from the upstream source code.
+- Include the shared web font resources from [storytold/craft-fonts](https://github.com/storytold/craft-fonts).
+- Publish a ready-to-run Docker image to GHCR.
+- Automatically rebuild the image every week to incorporate upstream changes.
+- Provide a convenient deployment option for Unraid Community Applications.
+- Offer a simple Docker Compose configuration for users who prefer managing containers with Compose.
+- Keep the packaging and deployment configuration separate from the upstream VectorCraft project.
+
+This is a packaging and distribution project, not a fork intended to develop a separate vector editor.
+
+## How it works
+
+VectorCraft Web runs directly in the user's browser using WebAssembly. The Docker container serves the compiled static web application through NGINX; it does not provide a remote Linux desktop or perform document processing on the server.
+
+- **Browser-based editor:** access the vector illustration editor through a modern web browser.
+- **Local file selection:** opening files uses the browser's file picker.
+- **Browser downloads:** Save, Save As and Export generate browser downloads.
+- **Drag and drop:** supported files can be dropped into the browser application.
+- **No remote desktop:** no VNC, remote desktop session or Linux graphical environment is required.
+- **Self-hosted:** run the application on your own server and access it over your local network or through a properly configured reverse proxy.
+
+The container serves the application files and web fonts. Document opening, editing and exporting take place in the browser; the container is not a document-storage service.
 
 ## Docker image
+
+The image is published to GitHub Container Registry:
 
 ```text
 ghcr.io/mikapst/vectorcraft-web:latest
 ```
 
-## Docker Compose
+### Option 1 — Docker Compose (recommended)
+
+A `docker-compose.yml` file is provided at the root of this repository. It is the simplest way to start and maintain VectorCraft Web with Docker Compose.
 
 ```yaml
 services:
   vectorcraft-web:
     image: ghcr.io/mikapst/vectorcraft-web:latest
     container_name: vectorcraft-web
-    restart: unless-stopped
     ports:
       - "8080:8080"
+    restart: unless-stopped
 ```
 
-Open `http://YOUR_SERVER_IP:8080`.
-
-## Build automation
-
-GitHub Actions checks out the latest commits of:
-
-- [storytold/vectorcraft](https://github.com/storytold/vectorcraft)
-- [storytold/craft-fonts](https://github.com/storytold/craft-fonts)
-
-It installs the stable Rust toolchain, the `wasm32-unknown-unknown` target and Trunk, then runs the upstream Web build from `apps/vectorcraft-web`:
+From the repository root, start the application with:
 
 ```bash
-CRAFT_FONTS_DIR=/absolute/path/to/craft-fonts CRAFT_FONTS_REQUIRED=1 trunk build --release
+docker compose up -d
 ```
 
-The workflow copies the generated `dist/web` site into a temporary Docker build context and builds the image using an inline Dockerfile. No Dockerfile, NGINX configuration file or `.dockerignore` is required in this repository.
+Open the application in your browser:
 
-The workflow runs every Monday at 04:17 UTC, when packaging files change on `main`, or manually through **Actions → Build and publish VectorCraft Web → Run workflow**.
+```text
+http://YOUR_SERVER_IP:8080
+```
 
-Each build records the exact VectorCraft and craft-fonts commit SHAs in the GitHub Actions summary and image labels. Published tags include:
+Replace `YOUR_SERVER_IP` with the IP address or hostname of your server. If Docker is running on your own computer, you can use `http://localhost:8080`.
 
-- `latest`
-- `upstream-<short-commit>`
+#### Useful Compose commands
 
-Images are published for `linux/amd64` and `linux/arm64`.
+```bash
+# View container logs
+docker compose logs -f
 
-## Fonts
+# Pull the latest image and recreate the container
+docker compose pull
+docker compose up -d
 
-`craft-fonts` is checked out as a separate build input. `CRAFT_FONTS_DIR` points VectorCraft's build scripts to that checkout, and `CRAFT_FONTS_REQUIRED=1` makes the build fail if the fonts checkout is missing or invalid.
+# Stop and remove the container
+docker compose down
+```
 
-The upstream Trunk post-build hook copies the web fonts listed by VectorCraft into `dist/web/fonts`. The font files and their hash-addressed paths must be served unchanged. The image's NGINX configuration serves `.ttf` as `font/ttf`, enables compression, and applies long-lived caching to hash-addressed WebAssembly, JavaScript and font assets.
+No `.env` file or persistent volume is required for the default setup. The host port is configured in `docker-compose.yml`; by default, port `8080` on the host is mapped to port `8080` in the container. To use a different host port, change the left-hand side of the mapping. For example, `8081:8080` exposes the application on host port `8081`.
 
-## Browser requirements
+### Option 2 — Run directly with Docker
 
-VectorCraft uses WebGPU where available and WebGL2 otherwise. WebGPU requires a secure browser context (HTTPS, or localhost). Append `?webgl` to the URL to force the WebGL2 backend.
+If you prefer not to use Docker Compose, you can run the container directly:
 
-## Upstream projects
+```bash
+docker pull ghcr.io/mikapst/vectorcraft-web:latest
 
-- Application: https://github.com/storytold/vectorcraft
-- Shared fonts: https://github.com/storytold/craft-fonts
-- Web build documentation: https://github.com/storytold/vectorcraft/blob/main/docs/development.md
-- Static hosting notes: https://github.com/storytold/vectorcraft/blob/main/packaging/web/README.md
+docker run -d \
+  --name vectorcraft-web \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  ghcr.io/mikapst/vectorcraft-web:latest
+```
+
+Open the application at:
+
+```text
+http://YOUR_SERVER_IP:8080
+```
+
+### Network access and browser requirements
+
+The container listens for HTTP traffic on port `8080`. For external access, use a reverse proxy such as Traefik to terminate HTTPS and forward requests to the container over HTTP.
+
+Do not expose an unencrypted HTTP port directly to the public Internet. Restrict access to your intended network or protect external access with HTTPS and appropriate access controls.
+
+VectorCraft uses WebGPU where available and falls back to WebGL2. The application also provides a CPU rendering path for more compatible, but slower, operation:
+
+- No query flag: use WebGPU where available, otherwise WebGL2.
+- `?webgl`: force the WebGL2 backend.
+- `?cpu`: force the CPU canvas path.
+
+WebGPU requires a secure browser context (HTTPS, or localhost). Browser and graphics-driver support can affect performance and compatibility.
+
+## Automated builds
+
+GitHub Actions builds the VectorCraft Web application and publishes the Docker image automatically.
+
+| Trigger | Behaviour |
+|---|---|
+| Weekly schedule | Checks out the current upstream `main` branches, builds the WebAssembly application and publishes a new image when the build succeeds |
+| Manual workflow dispatch | Allows a build to be started manually from the Actions tab |
+| Changes to packaging files on `main` | Runs the workflow when the workflow, Compose file or README changes |
+
+### Published tags
+
+- `latest` — the latest successful build.
+- `upstream-<commit>` — identifies the exact VectorCraft source commit used for the build.
+
+The image is published for `linux/amd64` and `linux/arm64`. Since the container serves static web assets through NGINX, the compiled web files are architecture-independent.
+
+A scheduled rebuild does not guarantee that upstream changes are compatible or stable. If a build fails, the previously published image remains available. The `latest` tag is mutable and may point to a newer image after a successful build.
+
+## Build pipeline
+
+The workflow:
+
+1. Checks out this packaging repository.
+2. Checks out the current upstream `storytold/vectorcraft` source.
+3. Checks out the shared `storytold/craft-fonts` repository.
+4. Installs the stable Rust toolchain, the `wasm32-unknown-unknown` target and Trunk.
+5. Runs `trunk build --release` from `apps/vectorcraft-web`, with `CRAFT_FONTS_DIR` set to the fonts checkout and `CRAFT_FONTS_REQUIRED=1`.
+6. Verifies that the generated static site contains its HTML entry point and WebAssembly module.
+7. Packages the generated site into an NGINX image and publishes it to GHCR.
+
+The web build writes its static site to `dist/web`. The upstream Trunk post-build hook also copies the web font files listed by VectorCraft into the generated `fonts/` directory when `craft-fonts` is supplied. The build is configured to fail rather than publish if the required fonts checkout is unavailable.
+
+The Docker image is built directly inside the GitHub Actions workflow using an inline Dockerfile. The repository therefore does not need a separate `Dockerfile`, `nginx.conf` or `.dockerignore`.
+
+The workflow records the exact VectorCraft and `craft-fonts` commits used for each image in the GitHub Actions summary and image labels.
+
+## Fonts and static hosting
+
+VectorCraft's web build uses the shared `craft-fonts` repository for additional font resources. The generated `fonts/` directory must be served alongside the WebAssembly files.
+
+The NGINX configuration used for the image:
+
+- serves `.wasm` files with the `application/wasm` MIME type;
+- serves `.ttf` files with the `font/ttf` MIME type;
+- enables gzip compression for WebAssembly, JavaScript, CSS, HTML and other supported text resources;
+- revalidates `index.html` so clients can discover the latest application build;
+- applies long-lived caching to hash-addressed JavaScript, WebAssembly and font assets.
+
+The application checks the integrity of downloaded web fonts. Font files must therefore be served unchanged; a rewritten or incorrectly served font may be rejected by the browser application.
+
+## Unraid Community Applications
+
+This image is intended to be distributed through the maintainer's Unraid Community Applications repository.
+
+The Unraid template will reference the published GHCR image and provide configuration for the web port and other container settings.
+
+- **Unraid Community Applications repository:** [MikaPST/unraid-community-apps](https://github.com/MikaPST/unraid-community-apps)
+- **VectorCraft Web template:** to be added after the image has been tested and validated.
+
+This repository contains the image build, publication workflow and Docker Compose configuration. The Unraid Community Applications template is maintained separately.
+
+## Upstream project and attribution
+
+VectorCraft is an open-source vector illustration application developed by the ArtCraft Team and its contributors.
+
+- **Source code:** [storytold/vectorcraft](https://github.com/storytold/vectorcraft)
+- **Web build instructions:** [Development — Web build](https://github.com/storytold/vectorcraft/blob/main/docs/development.md)
+- **Web hosting guide:** [Hosting VectorCraft for the web](https://github.com/storytold/vectorcraft/blob/main/packaging/web/README.md)
+- **Shared font assets:** [storytold/craft-fonts](https://github.com/storytold/craft-fonts)
+- **Official releases:** [VectorCraft releases](https://github.com/storytold/vectorcraft/releases)
+
+VectorCraft is dual-licensed under the **MIT License or Apache License 2.0**, at the user's option. The upstream project includes notices and attribution information for bundled third-party assets. Fonts supplied by `craft-fonts` retain their own licences, including SIL Open Font License notices where applicable.
+
+- [Upstream MIT License](https://github.com/storytold/vectorcraft/blob/main/LICENSE-MIT)
+- [Upstream Apache License 2.0](https://github.com/storytold/vectorcraft/blob/main/LICENSE-APACHE)
+- [Upstream NOTICE](https://github.com/storytold/vectorcraft/blob/main/NOTICE)
+- [Upstream asset attributions](https://github.com/storytold/vectorcraft/blob/main/ASSETS.md)
+
+The licences for the upstream application do not automatically determine the licence of the packaging files maintained in this repository. Refer to the repository's own `LICENSE` file for the terms applicable to those files.
+
+The VectorCraft name, ArtCraft branding and logos remain subject to their respective trademark and usage terms. This repository is an independent community-maintained packaging project and is **not an official VectorCraft release**, nor is it affiliated with or endorsed by the VectorCraft or ArtCraft maintainers.
 
 ## Disclaimer
 
-This is an independent community packaging project maintained by MikaPST. It is not an official VectorCraft image or distribution. VectorCraft is dual-licensed under MIT or Apache-2.0; bundled assets and fonts retain their respective licences. See the upstream `NOTICE`, `ASSETS.md` and licence files for details.
+VectorCraft is actively developed. Features, compatibility and behaviour may change between upstream builds. Test new images before relying on the application for important work. Use the application and its generated artwork at your own discretion.
