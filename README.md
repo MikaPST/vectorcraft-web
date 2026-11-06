@@ -3,7 +3,6 @@
 </p>
 
 <h1 align="center">VectorCraft Web — Docker Image</h1>
-
 <p align="center">
   A community-maintained Docker image for
   <a href="https://github.com/storytold/vectorcraft">VectorCraft</a>,
@@ -11,10 +10,12 @@
   <br>
   Automated builds and image publication to GitHub Container Registry (GHCR).
 </p>
-
 <p align="center">
   <a href="https://github.com/MikaPST/vectorcraft-web/actions/workflows/publish-image.yml">
     <img src="https://github.com/MikaPST/vectorcraft-web/actions/workflows/publish-image.yml/badge.svg" alt="Build and publish VectorCraft Web">
+  </a>
+  <a href="https://github.com/MikaPST/vectorcraft-web/releases/latest">
+    <img src="https://img.shields.io/github/v/release/MikaPST/vectorcraft-web?label=Release&logo=github&color=blue" alt="Latest Release">
   </a>
   <a href="https://github.com/MikaPST/vectorcraft-web/pkgs/container/vectorcraft-web">
     <img src="https://ghcr-badge.egpl.dev/mikapst/vectorcraft-web/latest_tag?trim=major&label=GHCR" alt="GHCR image tag">
@@ -32,6 +33,7 @@ The official VectorCraft project provides a WebAssembly-based version of its vec
 
 The goals are to:
 
+- Publish a matching GitHub Release only after the Docker build and push succeed.
 - Build VectorCraft Web from the upstream source code.
 - Include the shared web font resources from [storytold/craft-fonts](https://github.com/storytold/craft-fonts).
 - Publish a ready-to-run Docker image to GHCR.
@@ -62,6 +64,14 @@ The image is published to GitHub Container Registry:
 ```text
 ghcr.io/mikapst/vectorcraft-web:latest
 ```
+
+Each official upstream release is also published under its exact version tag, for example:
+
+```text
+ghcr.io/mikapst/vectorcraft-web:vX.Y.Z
+```
+
+Use a versioned tag if you want to keep a deployment on a specific release. The `latest` tag updates when an image is published.
 
 ### Option 1 — Docker Compose (recommended)
 
@@ -141,26 +151,49 @@ VectorCraft uses WebGPU where available and falls back to WebGL2. The applicatio
 
 WebGPU requires a secure browser context (HTTPS, or localhost). Browser and graphics-driver support can affect performance and compatibility.
 
+### Fonts and static hosting
+
+VectorCraft's web build uses the shared `craft-fonts` repository for additional font resources. The generated `fonts/` directory must be served alongside the WebAssembly files.
+
+The NGINX configuration used for the image:
+
+- serves `.wasm` files with the `application/wasm` MIME type;
+- serves `.ttf` files with the `font/ttf` MIME type;
+- enables gzip compression for WebAssembly, JavaScript, CSS, HTML and other supported text resources;
+- revalidates `index.html` so clients can discover the latest application build;
+- applies long-lived caching to hash-addressed JavaScript, WebAssembly and font assets.
+
+The application checks the integrity of downloaded web fonts. Font files must therefore be served unchanged; a rewritten or incorrectly served font may be rejected by the browser application.
+
 ## Automated builds
 
-GitHub Actions builds the VectorCraft Web application and publishes the Docker image automatically.
+GitHub Actions checks the official [VectorCraft releases](https://github.com/storytold/vectorcraft/releases), builds the WebAssembly application from the selected upstream tag and publishes the image to GHCR.
 
 | Trigger | Behaviour |
 |---|---|
-| Weekly schedule | Checks out the current upstream `main` branches, builds the WebAssembly application and publishes a new image when the build succeeds |
-| Manual workflow dispatch | Allows a build to be started manually from the Actions tab |
-| Changes to packaging files on `main` | Runs the workflow when the workflow, Compose file or README changes |
+| Weekly schedule | Checks the latest official VectorCraft release and builds it if it has not already been published here |
+| Manual workflow dispatch | Builds the latest official release, or a specified `upstream_tag` |
+| Force rebuild | Rebuilds an already published version with `force_rebuild: true` |
+| Changes to packaging files on `main` | Rebuilds the current official upstream release with the updated workflow |
 
 ### Published tags
 
-- `latest` — the latest successful build.
-- `upstream-<commit>` — identifies the exact VectorCraft source commit used for the build.
+- `latest` — the latest successfully published image (mutable tag).
+- `<upstream-version>` — the exact official upstream tag, for example `vX.Y.Z`.
+- `upstream-<commit>` — the upstream source commit used for the image (first 12 hexadecimal characters).
 
-The image is published for `linux/amd64` and `linux/arm64`. Since the container serves static web assets through NGINX, the compiled web files are architecture-independent.
+The image targets both `linux/amd64` and `linux/arm64`. The workflow checks out **the official upstream release tag**, rather than compiling `main` as the versioned source.
 
-A scheduled rebuild does not guarantee that upstream changes are compatible or stable. If a build fails, the previously published image remains available. The `latest` tag is mutable and may point to a newer image after a successful build.
+### GitHub Releases
 
-## Build pipeline
+After a successful Docker build and GHCR push, the workflow creates or updates a [GitHub Release](https://github.com/MikaPST/vectorcraft-web/releases) matching the upstream tag. It includes the upstream release notes, source link and commit, Docker tags, supported architectures and (when available) the published image digest.
+
+The Release badge at the top of this README updates automatically. Scheduled runs skip versions already released here. You can force a rebuild from **Actions → Build and publish VectorCraft Web → Run workflow**.
+
+> [!IMPORTANT]
+> A GitHub Release is created only after the Docker image has been successfully published. The `latest` tag may change after a rebuild; pin a versioned image tag for a stable deployment. Auxiliary source repositories (for example `craft-fonts`) may be checked out separately and are not necessarily pinned to the upstream release commit.
+
+### Build pipeline
 
 The workflow:
 
@@ -178,20 +211,6 @@ The Docker image is built directly inside the GitHub Actions workflow using an i
 
 The workflow records the exact VectorCraft and `craft-fonts` commits used for each image in the GitHub Actions summary and image labels.
 
-## Fonts and static hosting
-
-VectorCraft's web build uses the shared `craft-fonts` repository for additional font resources. The generated `fonts/` directory must be served alongside the WebAssembly files.
-
-The NGINX configuration used for the image:
-
-- serves `.wasm` files with the `application/wasm` MIME type;
-- serves `.ttf` files with the `font/ttf` MIME type;
-- enables gzip compression for WebAssembly, JavaScript, CSS, HTML and other supported text resources;
-- revalidates `index.html` so clients can discover the latest application build;
-- applies long-lived caching to hash-addressed JavaScript, WebAssembly and font assets.
-
-The application checks the integrity of downloaded web fonts. Font files must therefore be served unchanged; a rewritten or incorrectly served font may be rejected by the browser application.
-
 ## Unraid Community Applications
 
 This image is intended to be distributed through the maintainer's Unraid Community Applications repository.
@@ -202,8 +221,9 @@ The Unraid template will reference the published GHCR image and provide configur
 - **VectorCraft Web template:** to be added after the image has been tested and validated.
 
 This repository contains the image build, publication workflow and Docker Compose configuration. The Unraid Community Applications template is maintained separately.
+- **Template:** [vectorcraft-web.xml](https://github.com/MikaPST/unraid-community-apps/blob/main/templates/vectorcraft-web.xml)
 
-## Upstream project and attribution
+## Upstream project
 
 VectorCraft is an open-source vector illustration application developed by the ArtCraft Team and its contributors.
 
@@ -212,6 +232,10 @@ VectorCraft is an open-source vector illustration application developed by the A
 - **Web hosting guide:** [Hosting VectorCraft for the web](https://github.com/storytold/vectorcraft/blob/main/packaging/web/README.md)
 - **Shared font assets:** [storytold/craft-fonts](https://github.com/storytold/craft-fonts)
 - **Official releases:** [VectorCraft releases](https://github.com/storytold/vectorcraft/releases)
+
+The MikaPST GitHub Release tracks the upstream version but represents independent Docker packaging, not an official VectorCraft distribution.
+
+## License and attribution
 
 VectorCraft is dual-licensed under the **MIT License or Apache License 2.0**, at the user's option. The upstream project includes notices and attribution information for bundled third-party assets. Fonts supplied by `craft-fonts` retain their own licences, including SIL Open Font License notices where applicable.
 
