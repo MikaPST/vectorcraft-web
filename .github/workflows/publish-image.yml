@@ -15,12 +15,12 @@ on:
   schedule:
     - cron: "17 3 * * *"
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - ".github/workflows/publish-image.yml"
-      - "docker-compose.yml"
-      - "README.md"
+      - "Dockerfile"
+      - "nginx.conf"
+      - ".dockerignore"
 
 permissions:
   contents: write
@@ -32,12 +32,19 @@ concurrency:
 
 jobs:
   build:
-    name: Build and publish multi-platform image
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout packaging repository
         uses: actions/checkout@v4
+        with:
+          path: packaging
+
+      - name: Validate packaging files
+        run: |
+          set -euo pipefail
+          test -s packaging/Dockerfile
+          test -s packaging/nginx.conf
+          test -s packaging/.dockerignore
 
       - name: Resolve official upstream release
         id: upstream-release
@@ -48,19 +55,17 @@ jobs:
           script: |
             const requested = (process.env.REQUESTED_TAG || '').trim();
             const args = { owner: 'storytold', repo: 'vectorcraft' };
-            const result = requested
+            const { data: release } = requested
               ? await github.rest.repos.getReleaseByTag({ ...args, tag: requested })
               : await github.rest.repos.getLatestRelease(args);
-            const release = result.data;
             if (!release.tag_name) throw new Error('No upstream release tag found');
             core.setOutput('tag', release.tag_name);
+            core.setOutput('name', release.name || `VectorCraft ${release.tag_name}`);
             core.setOutput('url', release.html_url);
-            core.setOutput('body', release.body || '');
-            core.setOutput('prerelease', String(release.prerelease));
             core.setOutput('published_at', release.published_at || '');
-            core.setOutput('name', release.name || `vectorcraft ${release.tag_name}`);
+            core.setOutput('prerelease', String(release.prerelease));
 
-      - name: Check local release
+      - name: Check existing packaging release
         id: release-check
         uses: actions/github-script@v7
         env:
@@ -78,26 +83,37 @@ jobs:
             const forced = process.env.FORCE_REBUILD === 'true' || context.eventName === 'push';
             core.setOutput('skip', String(exists && !forced));
 
-      - name: Checkout VectorCraft source
+      - name: Checkout official VectorCraft release
         if: steps.release-check.outputs.skip != 'true'
-        run: |
-          git clone --depth 1 --branch "${{ steps.upstream-release.outputs.tag }}" https://github.com/storytold/vectorcraft.git upstream/vectorcraft
-          echo "VECTORCRAFT_COMMIT=$(git -C upstream/vectorcraft rev-parse HEAD)" >> "$GITHUB_ENV"
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/vectorcraft
+          ref: ${{ steps.upstream-release.outputs.tag }}
+          path: vectorcraft-src
+          persist-credentials: false
 
-      - name: Checkout craft-fonts source
+      - name: Checkout craft-fonts
         if: steps.release-check.outputs.skip != 'true'
-        run: |
-          git clone --depth 1 https://github.com/storytold/craft-fonts.git upstream/craft-fonts
-          echo "CRAFT_FONTS_COMMIT=$(git -C upstream/craft-fonts rev-parse HEAD)" >> "$GITHUB_ENV"
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          path: craft-fonts
+          persist-credentials: false
 
-      - name: Record upstream release commit for image tags
+      - name: Record upstream commits
         if: steps.release-check.outputs.skip != 'true'
-        id: release-source
+        id: revisions
         shell: bash
         run: |
-          echo "short=$(git -C upstream/vectorcraft rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          echo "vectorcraft=$(git -C vectorcraft-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git -C vectorcraft-src rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "fonts=$(git -C craft-fonts rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          test -s vectorcraft-src/apps/vectorcraft-web/Trunk.toml
+          test -s vectorcraft-src/LICENSE-MIT
+          test -s vectorcraft-src/LICENSE-APACHE
 
-      - name: Install Rust and WebAssembly target
+      - name: Install Rust and WASM target
         if: steps.release-check.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -107,30 +123,48 @@ jobs:
         if: steps.release-check.outputs.skip != 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: upstream/vectorcraft -> target
+          workspaces: vectorcraft-src -> target
 
       - name: Install Trunk
         if: steps.release-check.outputs.skip != 'true'
         run: cargo install trunk --locked
 
-      - name: Build VectorCraft Web
+      - name: Build official VectorCraft Web
         if: steps.release-check.outputs.skip != 'true'
-        working-directory: upstream/vectorcraft/apps/vectorcraft-web
+        working-directory: vectorcraft-src/apps/vectorcraft-web
         env:
-          CRAFT_FONTS_DIR: ${{ github.workspace }}/upstream/craft-fonts
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
           CRAFT_FONTS_REQUIRED: "1"
         run: trunk build --release
 
-      - name: Prepare static website build context
+      - name: Assemble Docker build context
         if: steps.release-check.outputs.skip != 'true'
+        shell: bash
         run: |
-          mkdir -p dist/web
-          cp -a upstream/vectorcraft/dist/web/. dist/web/
-          test -s dist/web/index.html
-          test -n "$(find dist/web -type f -name '*.wasm' -print -quit)"
-          echo "## Upstream revisions" >> "$GITHUB_STEP_SUMMARY"
-          echo "- VectorCraft: \`${VECTORCRAFT_COMMIT}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- craft-fonts: \`${CRAFT_FONTS_COMMIT}\`" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          mkdir -p docker-context/site docker-context/legal
+          cp -a vectorcraft-src/dist/web/. docker-context/site/
+          cp packaging/Dockerfile packaging/nginx.conf packaging/.dockerignore docker-context/
+          cp vectorcraft-src/LICENSE-MIT vectorcraft-src/LICENSE-APACHE docker-context/legal/
+          for file in NOTICE ATTRIBUTION.md; do
+            if [ -f "vectorcraft-src/$file" ]; then cp "vectorcraft-src/$file" docker-context/legal/; fi
+          done
+          if [ -d craft-fonts ]; then
+            find craft-fonts -type f \( -iname '*OFL*.txt' -o -iname 'LICENSE*' \) -print0 | while IFS= read -r -d '' file; do
+              dest="docker-context/legal/craft-fonts/${file#craft-fonts/}"
+              mkdir -p "$(dirname "$dest")"
+              cp "$file" "$dest"
+            done
+          fi
+          test -s docker-context/site/index.html
+          find docker-context/site -name '*.wasm' -type f | grep -q .
+          test -d docker-context/site/fonts
+
+      - name: Set image name
+        if: steps.release-check.outputs.skip != 'true'
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vectorcraft-web" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         if: steps.release-check.outputs.skip != 'true'
@@ -140,7 +174,7 @@ jobs:
         if: steps.release-check.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         if: steps.release-check.outputs.skip != 'true'
         uses: docker/login-action@v3
         with:
@@ -148,110 +182,77 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish image
+      - name: Build and publish Docker image
         if: steps.release-check.outputs.skip != 'true'
-        env:
-          VECTORCRAFT_COMMIT: ${{ env.VECTORCRAFT_COMMIT }}
-          CRAFT_FONTS_COMMIT: ${{ env.CRAFT_FONTS_COMMIT }}
-          SHORT_COMMIT: ${{ env.VECTORCRAFT_COMMIT }}
-        shell: bash
-        run: |
-          SHORT_COMMIT="${VECTORCRAFT_COMMIT:0:12}"
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --push \
-            --tag ghcr.io/mikapst/vectorcraft-web:latest \
-            --tag "ghcr.io/mikapst/vectorcraft-web:${{ steps.upstream-release.outputs.tag }}" \
-            --tag "ghcr.io/mikapst/vectorcraft-web:upstream-${SHORT_COMMIT}" \
-            --label "org.opencontainers.image.title=VectorCraft Web" \
-            --label "org.opencontainers.image.description=Community-maintained Docker image for VectorCraft Web" \
-            --label "org.opencontainers.image.source=https://github.com/MikaPST/vectorcraft-web" \
-            --label "org.opencontainers.image.url=https://github.com/storytold/vectorcraft" \
-            --label "io.mikapst.vectorcraft.commit=${VECTORCRAFT_COMMIT}" \
-            --label "io.mikapst.craft-fonts.commit=${CRAFT_FONTS_COMMIT}" \
-            --file - . <<'DOCKERFILE'
-          FROM nginx:alpine
-          COPY dist/web/ /usr/share/nginx/html/
-          RUN printf '%s\n' \
-            'server {' \
-            '  listen 8080;' \
-            '  server_name _;' \
-            '  root /usr/share/nginx/html;' \
-            '  index index.html;' \
-            '  include /etc/nginx/mime.types;' \
-            '  types { application/wasm wasm; font/ttf ttf; }' \
-            '  gzip on;' \
-            '  gzip_vary on;' \
-            '  gzip_min_length 1024;' \
-            '  gzip_types application/wasm application/javascript text/javascript text/css application/json image/svg+xml;' \
-            '  location = /index.html { add_header Cache-Control "no-cache"; try_files $uri =404; }' \
-            '  location ~* \.(wasm|js|ttf)$ { add_header Cache-Control "public, max-age=31536000, immutable"; try_files $uri =404; }' \
-            '  location / { try_files $uri $uri/ =404; }' \
-            '}' > /etc/nginx/conf.d/default.conf
-          EXPOSE 8080
-          HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-            CMD wget -q --spider http://127.0.0.1:8080/ || exit 1
-          DOCKERFILE
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker-context
+          file: ./docker-context/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ steps.upstream-release.outputs.tag }}
+            ${{ steps.image.outputs.name }}:upstream-${{ steps.revisions.outputs.short }}
+          labels: |
+            org.opencontainers.image.title=VectorCraft Web
+            org.opencontainers.image.source=https://github.com/MikaPST/vectorcraft-web
+            org.opencontainers.image.revision=${{ steps.revisions.outputs.vectorcraft }}
+            io.mikapst.craft-fonts.commit=${{ steps.revisions.outputs.fonts }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Report published image
-        if: steps.release-check.outputs.skip != 'true'
-        run: |
-          {
-            echo "## Published image"
-            echo "- \`ghcr.io/mikapst/vectorcraft-web:latest\`"
-            echo "- \`ghcr.io/mikapst/vectorcraft-web:upstream-${VECTORCRAFT_COMMIT:0:12}\`"
-            echo "- Platforms: \`linux/amd64\`, \`linux/arm64\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Create or update versioned GitHub Release
+      - name: Create or update MikaPST GitHub Release
         if: steps.release-check.outputs.skip != 'true'
         uses: actions/github-script@v7
         env:
-          RELEASE_TAG: ${{ steps.upstream-release.outputs.tag }}
-          RELEASE_NAME: ${{ steps.upstream-release.outputs.name }}
-          RELEASE_URL: ${{ steps.upstream-release.outputs.url }}
-          RELEASE_NOTES: ${{ steps.upstream-release.outputs.body }}
-          RELEASE_PRERELEASE: ${{ steps.upstream-release.outputs.prerelease }}
-          RELEASE_PUBLISHED_AT: ${{ steps.upstream-release.outputs.published_at }}
-          RELEASE_SOURCE_SHA: ${{ steps.release-source.outputs.short }}
+          UPSTREAM_TAG: ${{ steps.upstream-release.outputs.tag }}
+          UPSTREAM_NAME: ${{ steps.upstream-release.outputs.name }}
+          UPSTREAM_URL: ${{ steps.upstream-release.outputs.url }}
+          UPSTREAM_PUBLISHED_AT: ${{ steps.upstream-release.outputs.published_at }}
+          UPSTREAM_PRERELEASE: ${{ steps.upstream-release.outputs.prerelease }}
+          UPSTREAM_SHA: ${{ steps.revisions.outputs.vectorcraft }}
+          FONTS_SHA: ${{ steps.revisions.outputs.fonts }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         with:
           script: |
-            const tag = process.env.RELEASE_TAG;
-            const image = 'ghcr.io/mikapst/vectorcraft-web';
+            const tag = process.env.UPSTREAM_TAG;
+            const { data: upstream } = await github.rest.repos.getReleaseByTag({
+              owner: 'storytold', repo: 'vectorcraft', tag
+            });
+            const image = process.env.IMAGE_NAME;
             const body = [
-              `Community-maintained Docker packaging for **${process.env.RELEASE_NAME}**.`,
-              '',
-              '## Docker image',
+              `This release packages **${process.env.UPSTREAM_NAME}** as a self-hosted Docker image.`,
+              '', '## Docker image',
               `- \`${image}:latest\``,
               `- \`${image}:${tag}\``,
-              `- \`${image}:upstream-${process.env.RELEASE_SOURCE_SHA}\``,
-              '',
-              'Platforms: `linux/amd64`, `linux/arm64`.',
-              '',
-              `Official upstream release: ${process.env.RELEASE_URL}`,
-              `Published upstream: ${process.env.RELEASE_PUBLISHED_AT || 'not specified'}`,
-              '',
-              `Upstream source commit: \`${process.env.RELEASE_SOURCE_SHA}\``,
-              '',
-              '## Upstream release notes',
-              process.env.RELEASE_NOTES || 'No release notes provided upstream.',
-              '',
-              'This is an independent Docker packaging release, not an official upstream distribution.'
+              `- \`${image}:upstream-${process.env.UPSTREAM_SHA.slice(0, 12)}\``,
+              '', 'Supported platforms: `linux/amd64`, `linux/arm64`.',
+              '', '## Upstream project',
+              `- Official release: ${process.env.UPSTREAM_URL}`,
+              `- Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
+              `- craft-fonts commit: \`${process.env.FONTS_SHA}\``,
+              `- Published upstream: ${process.env.UPSTREAM_PUBLISHED_AT || 'not specified'}`,
+              '', '## Upstream release notes',
+              upstream.body || 'No release notes provided.',
+              '', '## Image details',
+              `- Image digest: \`${process.env.IMAGE_DIGEST}\``,
+              '- Community-maintained packaging; not an official VectorCraft release.'
             ].join('\n');
             let existing;
             try {
-              existing = (await github.rest.repos.getReleaseByTag({ ...context.repo, tag })).data;
+              ({ data: existing } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag }));
             } catch (error) {
               if (error.status !== 404) throw error;
             }
+            const args = {
+              ...context.repo, tag_name: tag, name: `VectorCraft Web ${tag}`,
+              body, draft: false, prerelease: process.env.UPSTREAM_PRERELEASE === 'true'
+            };
             if (existing) {
-              await github.rest.repos.updateRelease({
-                ...context.repo, release_id: existing.id, name: 'VectorCraft Web ' + tag,
-                body, draft: false, prerelease: process.env.RELEASE_PRERELEASE === 'true'
-              });
+              await github.rest.repos.updateRelease({ ...args, release_id: existing.id });
             } else {
-              await github.rest.repos.createRelease({
-                ...context.repo, tag_name: tag, target_commitish: context.sha,
-                name: 'VectorCraft Web ' + tag, body, draft: false, prerelease: process.env.RELEASE_PRERELEASE === 'true'
-              });
+              await github.rest.repos.createRelease({ ...args, target_commitish: context.sha });
             }
