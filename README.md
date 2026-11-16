@@ -173,10 +173,24 @@ Each successful build publishes these GHCR tags:
 
 Images target `linux/amd64` and `linux/arm64`. The workflow records both the VectorCraft source revision and the `craft-fonts` revision. The fonts checkout follows the default branch and is not pinned to a release-specific commit.
 
-After a successful GHCR push, the workflow creates or updates the corresponding GitHub Release with the official release notes, upstream source commit, font revision, image tags and Docker image digest.
+### GitHub Releases
+
+After a successful Docker build and GHCR push, the workflow creates or updates a [GitHub Release](https://github.com/MikaPST/vectorcraft-web/releases) matching the official upstream tag.
+
+Each release includes:
+
+- The official upstream release notes and a link to the source release.
+- The VectorCraft source commit used for the build.
+- The `craft-fonts` source revision used to bundle the web fonts.
+- The published GHCR image tags and supported architectures (`linux/amd64` and `linux/arm64`).
+- The published Docker image digest, when available.
+
+The Release badge at the top of this README updates automatically. Scheduled runs skip upstream versions that already have a release in this repository. To rebuild an existing version, use **Actions → Build and publish VectorCraft Web → Run workflow**, enable `force_rebuild`, and optionally specify `upstream_tag`.
 
 > [!IMPORTANT]
-> A new upstream release is not published until the Docker build and push succeed. The `latest` tag is mutable; use a specific version tag for repeatable deployments.
+> A GitHub Release is created only after the Docker image has been successfully published to GHCR. The `latest` tag is mutable; pin a versioned image tag for a stable deployment.
+>
+> The `craft-fonts` checkout follows its default branch rather than a release-specific revision. Consequently, rebuilding the same VectorCraft tag at a later date can include different font assets. The release records the font commit to help trace the exact build inputs.
 
 ## Unraid Community Applications
 
